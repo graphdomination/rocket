@@ -46,12 +46,9 @@ pub const UciEngine = struct {
             _ = stdout;
             const writer = self.engine.uciWriter();
             self.handleCommand(trimmed, writer) catch |err| {
-                // UCI input errors must not terminate the engine process. A
-                // controller expects the process to remain responsive and may
-                // immediately follow with `isready`.
                 try writer.print("info string command error: {s}\n", .{@errorName(err)});
             };
-            try writer.writeAll(""); // Implicit flush happens when writer goes out of scope
+            try writer.writeAll("");
         }
     }
 
@@ -116,8 +113,6 @@ pub const UciEngine = struct {
             var fen_parts = std.ArrayList(u8).init(self.allocator);
             defer fen_parts.deinit();
 
-            // A UCI FEN has exactly six fields. Consuming a fixed number avoids
-            // swallowing the `moves` marker and then skipping the first move.
             for (0..6) |count| {
                 const part = iter.next() orelse return error.InvalidFen;
                 if (count > 0) try fen_parts.append(' ');
@@ -230,7 +225,6 @@ pub const UciEngine = struct {
     }
 
     fn cmdSetOption(self: *UciEngine, iter: *std.mem.TokenIterator(u8, .scalar), writer: anytype) !void {
-        // setoption name <name> value <value>
         _ = writer;
 
         const name_token = iter.next();

@@ -124,9 +124,6 @@ pub const MoveList = struct {
     }
 };
 
-/// Resolve a coordinate-only UCI move to the fully annotated legal move.
-/// This is required for castling, en passant, captures, and promotions because
-/// makeMove relies on those flags to update the complete position correctly.
 pub fn resolveLegalMove(state: *const GameState, uci_move: Move) ?Move {
     var legal_moves = MoveList.init();
     generateLegalMoves(state, &legal_moves);
@@ -184,9 +181,6 @@ pub fn generateLegalMoves(state: *const GameState, moves: *MoveList) void {
     moves.count = write_idx;
 }
 
-/// Generate moves without testing whether they expose the moving king.
-/// Search uses this form because it already makes each move; checking legality
-/// there avoids making/unmaking every move twice at every node.
 pub fn generatePseudoLegalMoves(state: *const GameState, moves: *MoveList) void {
     generateMoves(state, state.side_to_move, moves, false);
 }
@@ -198,7 +192,6 @@ pub fn generateNoisyMoves(state: *const GameState, moves: *MoveList) void {
 fn generateMoves(state: *const GameState, color: i8, moves: *MoveList, noisy_only: bool) void {
     moves.clear();
 
-    // Iterate the side's occupancy directly while retaining ascending source-square order.
     var pieces = state.board.colors[Board.colorIndex(color)];
     while (pieces != 0) {
         const from = bb.popLsb(&pieces);

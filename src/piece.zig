@@ -22,11 +22,10 @@ pub const PieceKind = enum {
 
 pub const Piece = struct {
     kind: PieceKind,
-    color: i8, // 1 = white, 0 = black
+    color: i8,
 
     pub fn print(self: Piece) u8 {
         const kindChar = self.kind.print();
-        // White pieces (1) are uppercase, black (0) are lowercase (standard chess notation)
         return if (self.color == 1) kindChar else ascii.toLower(kindChar);
     }
 };

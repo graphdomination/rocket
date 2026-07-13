@@ -5,29 +5,25 @@ const GameState = @import("gamestate.zig").GameState;
 const Piece = @import("piece.zig").Piece;
 const zobrist = @import("zobrist.zig");
 
-/// Entry type in the transposition table
 pub const EntryType = enum(u8) {
-    Exact = 0, // PV-node (exact score)
-    Alpha = 1, // All-node (upper bound, failed low)
-    Beta = 2, // Cut-node (lower bound, failed high)
+    Exact = 0,
+    Alpha = 1,
+    Beta = 2,
 };
 
-/// Transposition table entry
 pub const TTEntry = struct {
-    hash: u64, // Full hash for verification
-    best_move: Move, // Best move found in this position
-    score: i32, // Evaluation score
-    depth: i8, // Search depth
-    entry_type: EntryType, // Type of node
-    age: u8, // Search age (for replacement)
+    hash: u64,
+    best_move: Move,
+    score: i32,
+    depth: i8,
+    entry_type: EntryType,
+    age: u8,
 
     pub fn isEmpty(self: *const TTEntry) bool {
         return self.hash == 0;
     }
 };
 
-/// A lock-free table slot. The entry payload and its 16-bit hash signature fit
-/// in one atomic word, so concurrent writers can never publish a torn entry.
 const AtomicTTEntry = struct {
     data: std.atomic.Value(u64),
 
@@ -43,14 +39,12 @@ const Snapshot = struct {
     entry: TTEntry,
 };
 
-/// Transposition table
 pub const TranspositionTable = struct {
     entries: []AtomicTTEntry,
     allocator: std.mem.Allocator,
     size: usize,
-    age: u8, // Current search age
+    age: u8,
 
-    /// Create a new transposition table with given size in MB
     pub fn init(allocator: std.mem.Allocator, size_mb: usize) !TranspositionTable {
         const bytes = size_mb * 1024 * 1024;
         const entry_size = @sizeOf(AtomicTTEntry);
@@ -71,7 +65,6 @@ pub const TranspositionTable = struct {
         self.allocator.free(self.entries);
     }
 
-    /// Clear all entries
     pub fn clear(self: *TranspositionTable) void {
         for (self.entries) |*entry| {
             entry.data.store(0, .release);
@@ -79,17 +72,14 @@ pub const TranspositionTable = struct {
         self.age = 0;
     }
 
-    /// Increment search age (call at start of new search)
     pub fn incrementAge(self: *TranspositionTable) void {
-        self.age +%= 1; // Wrapping add
+        self.age +%= 1;
     }
 
-    /// Get the index for a hash
     inline fn getIndex(self: *const TranspositionTable, hash: u64) usize {
         return @intCast((@as(u128, hash) * @as(u128, self.size)) >> 64);
     }
 
-    /// Probe the transposition table
     pub fn probe(self: *const TranspositionTable, hash: u64) ?TTEntry {
         const index = self.getIndex(hash);
         const snapshot = readSnapshot(&self.entries[index]) orelse return null;
@@ -101,7 +91,6 @@ pub const TranspositionTable = struct {
         return null;
     }
 
-    /// Store an entry in the transposition table
     pub fn store(
         self: *TranspositionTable,
         hash: u64,
@@ -134,7 +123,6 @@ pub const TranspositionTable = struct {
         }
     }
 
-    /// Get fill percentage (for debugging/info)
     pub fn getFillPercentage(self: *const TranspositionTable) f64 {
         var filled: usize = 0;
         const sample_size = @min(1000, self.size);
@@ -150,10 +138,6 @@ pub const TranspositionTable = struct {
 };
 
 inline fn hashSignature(hash: u64) u16 {
-    // getIndex uses the high part of hash * table_size. For power-of-two table
-    // sizes (including every normal MB setting), the old top-16 signature was
-    // fully determined by the bucket index and verified nothing at all. Use
-    // independent low bits so same-bucket collisions cannot masquerade as hits.
     return @truncate(hash);
 }
 
@@ -239,18 +223,15 @@ test "same-bucket collision fails signature verification" {
     try std.testing.expect(table.probe(colliding_hash) == null);
 }
 
-/// Compute Zobrist hash for a position
 pub fn computeHash(state: *const GameState) u64 {
     var hash: u64 = 0;
 
-    // Hash pieces
     for (state.board.squares, 0..) |square, idx| {
         if (square.piece) |piece| {
             hash ^= zobrist.getPieceKey(piece.kind, piece.color, @intCast(idx));
         }
     }
 
-    // Hash castling rights
     const rights = zobrist.encodeCastlingRights(
         state.castling_rights.white_kingside,
         state.castling_rights.white_queenside,
@@ -259,21 +240,18 @@ pub fn computeHash(state: *const GameState) u64 {
     );
     hash ^= zobrist.getCastlingKey(rights);
 
-    // Hash en passant
     if (state.en_passant_square) |ep| {
         const file = ep % 8;
         hash ^= zobrist.getEnPassantKey(file);
     }
 
-    // Hash side to move
-    if (state.side_to_move == 0) { // Black to move
+    if (state.side_to_move == 0) {
         hash ^= zobrist.getSideKey();
     }
 
     return hash;
 }
 
-/// Incrementally update a position key after makeMove has been applied.
 pub fn hashAfterMove(
     old_hash: u64,
     state: *const GameState,
@@ -340,7 +318,6 @@ pub fn hashAfterNull(old_hash: u64, old_ep_square: ?u8) u64 {
     return hash;
 }
 
-/// Update hash incrementally after a move (more efficient than recomputing)
 pub fn updateHashAfterMove(
     hash: u64,
     state: *const GameState,
@@ -348,9 +325,6 @@ pub fn updateHashAfterMove(
     old_castling_rights: u8,
     old_ep_square: ?u8,
 ) u64 {
-    // This is a placeholder for incremental update
-    // For simplicity, we'll recompute the hash
-    // In a competition engine, you'd want true incremental updates
     _ = hash;
     _ = move;
     _ = old_castling_rights;

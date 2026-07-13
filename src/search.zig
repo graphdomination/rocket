@@ -113,9 +113,7 @@ pub const SearchLimits = struct {
     max_depth: i32 = MAX_DEPTH,
     max_nodes: u64 = std.math.maxInt(u64),
     infinite: bool = false,
-    // A ponder search ignores its normal time budget until ponderhit. These
-    // pointers refer to Engine-owned atomics because SearchLimits is copied to
-    // every Lazy-SMP worker.
+
     pondering: ?*const std.atomic.Value(bool) = null,
     ponder_hit_time_ms: ?*const std.atomic.Value(i64) = null,
 };
@@ -170,9 +168,7 @@ pub const SearchThread = struct {
     tt: *TranspositionTable,
     stop_flag: *std.atomic.Value(bool),
     nnue: ?*nnue.Network,
-    // Parallel workers periodically publish their cumulative node counts here.
-    // This keeps UCI aggregation thread-safe without an atomic operation at
-    // every searched node.
+
     node_counters: ?[]std.atomic.Value(u64),
 
     pub fn init(id: usize, state: GameState, tt: *TranspositionTable, stop_flag: *std.atomic.Value(bool)) SearchThread {
@@ -272,8 +268,7 @@ inline fn shouldStop(thread: *SearchThread, limits: *const SearchLimits) bool {
                     timing_active = false;
                 } else if (limits.ponder_hit_time_ms) |hit_time| {
                     const hit = hit_time.load(.acquire);
-                    // A zero hit time means this was a ponder miss stopped by
-                    // the GUI; the stop flag above owns that transition.
+
                     if (hit > 0) timing_start = hit else timing_active = false;
                 }
             }
@@ -282,8 +277,7 @@ inline fn shouldStop(thread: *SearchThread, limits: *const SearchLimits) bool {
                 if (elapsed >= limits.max_time_ms) return true;
             }
         }
-        // A UCI node limit applies to the whole search, not independently to
-        // every Lazy-SMP helper.
+
         if (thread.reportedNodes() >= limits.max_nodes) return true;
     }
     if (thread.node_counters == null and total_nodes >= limits.max_nodes) {
@@ -558,8 +552,6 @@ fn alphaBeta(
     var eval_cached = false;
 
     if (!in_check) {
-        // A TT score is a searched bound, not a static evaluation. Feeding it
-        // into pruning decisions can discard tactically necessary moves.
         static_eval = if (thread.nnue) |net|
             net.evaluate(&thread.state)
         else
@@ -636,9 +628,6 @@ fn alphaBeta(
 
     orderMoves(thread, moves.moves[0..moves.count], tt_move, thread.ply);
 
-    // Internal iterative reduction: deep non-PV nodes with no TT guidance are
-    // unlikely to justify a full-width search. This is standard in modern
-    // engines and is re-searched naturally if the reduced search raises alpha.
     const iir: i32 = if (!is_pv and depth >= 4 and tt_move == null) 1 else 0;
     const child_depth = depth - 1 - iir;
 
@@ -748,8 +737,7 @@ fn alphaBeta(
                     if (is_quiet) {
                         thread.killers.store(thread.ply, move);
                         thread.history.update(thread.state.side_to_move, move, depth);
-                        // Earlier quiets failed to cut off this node; applying
-                        // a bounded malus improves their ordering next time.
+
                         for (searched_quiets[0 .. quiet_count - 1]) |failed_quiet| {
                             thread.history.penalize(thread.state.side_to_move, failed_quiet, depth);
                         }
@@ -821,8 +809,7 @@ fn iterativeDeepening(
 ) !SearchResult {
     defer thread.publishNodes();
     var score: i32 = 0;
-    // Helper threads are assigned staggered starting depths by parallelSearch.
-    // Honoring that offset avoids every worker duplicating depth 1 onward.
+
     var depth: i32 = if (thread.root_depth > 0) thread.root_depth else 1;
     var completed_score: i32 = 0;
     var completed_depth: i32 = 0;
@@ -845,8 +832,6 @@ fn iterativeDeepening(
     completed_pv.moves[0] = root_moves.moves[0];
     completed_pv.length = 1;
 
-    // The GUI still requires a legal move when the root position is already
-    // claimable under the fifty-move rule.
     if (thread.state.halfmove_clock >= 100) {
         return SearchResult{
             .best_move = completed_pv.moves[0],
@@ -903,9 +888,6 @@ fn printSearchInfo(thread: *SearchThread, depth: i32, score: i32, time_ms: u64, 
     const total_nodes = thread.reportedNodes();
     const nps = if (time_ms > 0) total_nodes * 1000 / time_ms else 0;
 
-    // Build the whole protocol line before taking the shared stdout writer.
-    // UCI keeps accepting commands while search runs, so piecemeal writes can
-    // otherwise splice readyok into the middle of a PV line.
     var line_buf: [2048]u8 = undefined;
     var line_stream = std.io.fixedBufferStream(&line_buf);
     const line = line_stream.writer();
@@ -989,9 +971,6 @@ pub fn parallelSearch(
     defer allocator.free(node_counters);
     for (node_counters) |*counter| counter.* = std.atomic.Value(u64).init(0);
 
-    // NNUE weights are immutable after loading, but accumulator stacks are
-    // mutated on every move. Sharing the Network pointer here caused races,
-    // corrupt evaluations, and made additional threads dramatically slower.
     var nnue_contexts: ?[]nnue.Network = null;
     var initialized_contexts: usize = 0;
     defer if (nnue_contexts) |contexts| {

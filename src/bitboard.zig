@@ -195,7 +195,6 @@ fn buildAttackTable(comptime size: usize, comptime magics: [64]Magic, comptime d
 const bishop_table = buildAttackTable(5248, bishop_magics, bishop_directions);
 const rook_table = buildAttackTable(102400, rook_magics, rook_directions);
 
-/// Kept for callers from the runtime-generated implementation; tables are now immutable.
 pub inline fn initMagics() void {}
 
 pub inline fn bishopAttacks(square: u8, occupancy: Bitboard) Bitboard {
