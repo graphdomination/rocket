@@ -78,6 +78,7 @@ pub const Engine = struct {
                 }
             } else {
                 const default_paths = [_][]const u8{
+                    "nnue/nn-1c0c37333daf.nnue",
                     "nnue/koivisto.bin",
                     "network.nnue",
                     "nn.nnue",

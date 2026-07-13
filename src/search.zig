@@ -107,6 +107,56 @@ const History = struct {
     }
 };
 
+const CountermoveHistory = struct {
+    table: [2][64][64]Move,
+
+    pub fn init() CountermoveHistory {
+        return CountermoveHistory{
+            .table = [_][64][64]Move{[_][64]Move{[_]Move{Move{ .from = 0, .to = 0 }} ** 64} ** 64} ** 2,
+        };
+    }
+
+    pub fn store(self: *CountermoveHistory, side: i8, prev_move: Move, counter_move: Move) void {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        self.table[color_idx][prev_move.from][prev_move.to] = counter_move;
+    }
+
+    pub fn get(self: *const CountermoveHistory, side: i8, prev_move: Move) ?Move {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        const move = self.table[color_idx][prev_move.from][prev_move.to];
+        if (move.from == 0 and move.to == 0) return null;
+        return move;
+    }
+
+    pub fn clear(self: *CountermoveHistory) void {
+        self.* = CountermoveHistory.init();
+    }
+};
+
+const ContinuationHistory = struct {
+    table: [2][64][64]i32,
+
+    pub fn init() ContinuationHistory {
+        return ContinuationHistory{
+            .table = [_][64][64]i32{[_][64]i32{[_]i32{0} ** 64} ** 64} ** 2,
+        };
+    }
+
+    pub fn update(self: *ContinuationHistory, side: i8, move: Move, bonus: i32) void {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        self.table[color_idx][move.from][move.to] += bonus;
+    }
+
+    pub fn get(self: *const ContinuationHistory, side: i8, move: Move) i32 {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        return self.table[color_idx][move.from][move.to];
+    }
+
+    pub fn clear(self: *ContinuationHistory) void {
+        self.* = ContinuationHistory.init();
+    }
+};
+
 pub const SearchLimits = struct {
     max_time_ms: u64 = std.math.maxInt(u64),
     start_time: i64 = 0,
@@ -159,6 +209,8 @@ pub const SearchThread = struct {
     state: GameState,
     killers: KillerMoves,
     history: History,
+    counter_moves: CountermoveHistory,
+    prev_move: ?Move,
     pv: PrincipalVariation,
     stats: SearchStats,
     ply: usize,
@@ -179,6 +231,8 @@ pub const SearchThread = struct {
             .state = state,
             .killers = KillerMoves.init(),
             .history = History.init(),
+            .counter_moves = CountermoveHistory.init(),
+            .prev_move = null,
             .pv = PrincipalVariation.init(),
             .stats = SearchStats{},
             .ply = 0,
@@ -316,6 +370,12 @@ fn scoreMoveOrdering(thread: *SearchThread, move: Move, tt_move: ?Move, ply: usi
 
     if (thread.killers.isKiller(ply, move)) {
         return 9000;
+    }
+
+    if (thread.prev_move) |prev| {
+        if (thread.counter_moves.get(thread.state.side_to_move, prev)) |counter| {
+            if (move.equals(counter)) return 8000;
+        }
     }
 
     return thread.history.getScore(thread.state.side_to_move, move);
@@ -576,7 +636,7 @@ fn alphaBeta(
                 thread.hash_stack[thread.ply + 1] = hashAfterNull(hash, saved_ep);
                 thread.ply += 1;
 
-                const R = NULL_MOVE_REDUCTION + @divTrunc(depth, 4) + @divTrunc(@max(0, static_eval - beta), 200);
+                const R = NULL_MOVE_REDUCTION + @divTrunc(depth, 4) + @divTrunc(@max(0, static_eval - beta), 200) + @as(i32, if (is_pv) 0 else 1);
                 const null_score = -try alphaBeta(thread, depth - 1 - R, -beta, -beta + 1, limits, false);
 
                 thread.ply -= 1;
@@ -629,7 +689,6 @@ fn alphaBeta(
     orderMoves(thread, moves.moves[0..moves.count], tt_move, thread.ply);
 
     const iir: i32 = if (!is_pv and depth >= 4 and tt_move == null) 1 else 0;
-    const child_depth = depth - 1 - iir;
 
     var best_move = Move{ .from = 0, .to = 0 };
     var best_score = -INFINITY;
@@ -662,6 +721,9 @@ fn alphaBeta(
         const is_quiet = !move.is_capture and move.promotion == null;
         const gives_check = movegen.isInCheckState(&thread.state, thread.state.side_to_move);
 
+        const extension: i32 = if (gives_check and depth < 8) 1 else 0;
+        const child_depth = depth - 1 - iir + extension;
+
         if (futility_pruning and is_quiet and !gives_check and legal_moves > 0) {
             thread.ply -= 1;
             movegen.unmakeMove(&thread.state, move, &undo);
@@ -687,6 +749,9 @@ fn alphaBeta(
             net.pushAndUpdateForMove(&thread.state, move, captured_kind);
         }
 
+        const saved_prev_move = thread.prev_move;
+        thread.prev_move = move;
+
         if (legal_moves == 1) {
             score = -try alphaBeta(thread, child_depth, -beta, -alpha, limits, true);
         } else {
@@ -696,6 +761,10 @@ fn alphaBeta(
                 if (thread.killers.isKiller(thread.ply - 1, move)) {
                     reduction = @max(0, reduction - 1);
                 }
+
+                const hist = thread.history.getScore(thread.state.side_to_move, move);
+                reduction -= @divTrunc(hist, 8000);
+                reduction = @max(0, @min(depth - 1, reduction));
             }
 
             const reduced_depth = if (child_depth > 0)
@@ -712,6 +781,8 @@ fn alphaBeta(
                 score = -try alphaBeta(thread, child_depth, -beta, -alpha, limits, true);
             }
         }
+
+        thread.prev_move = saved_prev_move;
 
         thread.ply -= 1;
         movegen.unmakeMove(&thread.state, move, &undo);
@@ -737,6 +808,10 @@ fn alphaBeta(
                     if (is_quiet) {
                         thread.killers.store(thread.ply, move);
                         thread.history.update(thread.state.side_to_move, move, depth);
+
+                        if (thread.prev_move) |prev| {
+                            thread.counter_moves.store(thread.state.side_to_move, prev, move);
+                        }
 
                         for (searched_quiets[0 .. quiet_count - 1]) |failed_quiet| {
                             thread.history.penalize(thread.state.side_to_move, failed_quiet, depth);
@@ -847,6 +922,8 @@ fn iterativeDeepening(
     while (depth <= limits.max_depth) : (depth += 1) {
         thread.root_depth = depth;
         thread.ply = 0;
+
+        thread.history.age();
 
         score = try aspirationSearch(thread, depth, score, limits);
 
