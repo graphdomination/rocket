@@ -4,7 +4,7 @@ const Move = @import("../movegen.zig").Move;
 const PieceKind = @import("../piece.zig").PieceKind;
 const features = @import("features.zig");
 
-pub const HIDDEN_SIZE: usize = 512;
+pub const HIDDEN_SIZE: usize = 1024;
 const SIMD_LANES: usize = 16;
 const VecI16 = @Vector(SIMD_LANES, i16);
 
@@ -25,8 +25,8 @@ pub const Accumulator = struct {
     }
 
     pub fn reset(self: *Accumulator, biases: []const i16) void {
-        @memcpy(&self.white, biases);
-        @memcpy(&self.black, biases);
+        @memcpy(&self.white, biases[0..HIDDEN_SIZE]);
+        @memcpy(&self.black, biases[0..HIDDEN_SIZE]);
     }
 };
 
@@ -97,18 +97,18 @@ pub const AccumulatorStack = struct {
 };
 
 pub const AccumulatorUpdater = struct {
-    input_weights: []const [HIDDEN_SIZE]i16,
-    input_biases: []const i16,
+    ft_weights: []const [HIDDEN_SIZE]i16,
+    ft_biases: []const i16,
 
-    pub fn init(input_weights: []const [HIDDEN_SIZE]i16, input_biases: []const i16) AccumulatorUpdater {
+    pub fn init(ft_weights: []const [HIDDEN_SIZE]i16, ft_biases: []const i16) AccumulatorUpdater {
         return AccumulatorUpdater{
-            .input_weights = input_weights,
-            .input_biases = input_biases,
+            .ft_weights = ft_weights,
+            .ft_biases = ft_biases,
         };
     }
 
     pub fn refresh(self: *const AccumulatorUpdater, acc: *Accumulator, state: *const GameState) void {
-        acc.reset(self.input_biases);
+        acc.reset(self.ft_biases);
 
         const white_king = state.king_squares[0];
         const black_king = state.king_squares[1];
@@ -131,7 +131,7 @@ pub const AccumulatorUpdater = struct {
         const white_idx = feature.index_white;
         const black_idx = feature.index_black;
 
-        if (white_idx >= self.input_weights.len or black_idx >= self.input_weights.len) {
+        if (white_idx >= self.ft_weights.len or black_idx >= self.ft_weights.len) {
             return;
         }
 
@@ -139,8 +139,8 @@ pub const AccumulatorUpdater = struct {
         while (i < HIDDEN_SIZE) : (i += SIMD_LANES) {
             const acc_white: VecI16 = @bitCast(acc.white[i..][0..SIMD_LANES].*);
             const acc_black: VecI16 = @bitCast(acc.black[i..][0..SIMD_LANES].*);
-            const weights_white: VecI16 = @bitCast(self.input_weights[white_idx][i..][0..SIMD_LANES].*);
-            const weights_black: VecI16 = @bitCast(self.input_weights[black_idx][i..][0..SIMD_LANES].*);
+            const weights_white: VecI16 = @bitCast(self.ft_weights[white_idx][i..][0..SIMD_LANES].*);
+            const weights_black: VecI16 = @bitCast(self.ft_weights[black_idx][i..][0..SIMD_LANES].*);
             acc.white[i..][0..SIMD_LANES].* = @bitCast(acc_white +% weights_white);
             acc.black[i..][0..SIMD_LANES].* = @bitCast(acc_black +% weights_black);
         }
@@ -150,7 +150,7 @@ pub const AccumulatorUpdater = struct {
         const white_idx = feature.index_white;
         const black_idx = feature.index_black;
 
-        if (white_idx >= self.input_weights.len or black_idx >= self.input_weights.len) {
+        if (white_idx >= self.ft_weights.len or black_idx >= self.ft_weights.len) {
             return;
         }
 
@@ -158,8 +158,8 @@ pub const AccumulatorUpdater = struct {
         while (i < HIDDEN_SIZE) : (i += SIMD_LANES) {
             const acc_white: VecI16 = @bitCast(acc.white[i..][0..SIMD_LANES].*);
             const acc_black: VecI16 = @bitCast(acc.black[i..][0..SIMD_LANES].*);
-            const weights_white: VecI16 = @bitCast(self.input_weights[white_idx][i..][0..SIMD_LANES].*);
-            const weights_black: VecI16 = @bitCast(self.input_weights[black_idx][i..][0..SIMD_LANES].*);
+            const weights_white: VecI16 = @bitCast(self.ft_weights[white_idx][i..][0..SIMD_LANES].*);
+            const weights_black: VecI16 = @bitCast(self.ft_weights[black_idx][i..][0..SIMD_LANES].*);
             acc.white[i..][0..SIMD_LANES].* = @bitCast(acc_white -% weights_white);
             acc.black[i..][0..SIMD_LANES].* = @bitCast(acc_black -% weights_black);
         }
@@ -273,16 +273,16 @@ pub const AccumulatorUpdater = struct {
         while (i < HIDDEN_SIZE) : (i += SIMD_LANES) {
             const parent_white: VecI16 = @bitCast(parent.white[i..][0..SIMD_LANES].*);
             const parent_black: VecI16 = @bitCast(parent.black[i..][0..SIMD_LANES].*);
-            const old_white: VecI16 = @bitCast(self.input_weights[old_feature.index_white][i..][0..SIMD_LANES].*);
-            const old_black: VecI16 = @bitCast(self.input_weights[old_feature.index_black][i..][0..SIMD_LANES].*);
-            const new_white: VecI16 = @bitCast(self.input_weights[new_feature.index_white][i..][0..SIMD_LANES].*);
-            const new_black: VecI16 = @bitCast(self.input_weights[new_feature.index_black][i..][0..SIMD_LANES].*);
+            const old_white: VecI16 = @bitCast(self.ft_weights[old_feature.index_white][i..][0..SIMD_LANES].*);
+            const old_black: VecI16 = @bitCast(self.ft_weights[old_feature.index_black][i..][0..SIMD_LANES].*);
+            const new_white: VecI16 = @bitCast(self.ft_weights[new_feature.index_white][i..][0..SIMD_LANES].*);
+            const new_black: VecI16 = @bitCast(self.ft_weights[new_feature.index_black][i..][0..SIMD_LANES].*);
 
             var child_white = parent_white -% old_white;
             var child_black = parent_black -% old_black;
             if (captured_feature) |captured| {
-                const captured_white: VecI16 = @bitCast(self.input_weights[captured.index_white][i..][0..SIMD_LANES].*);
-                const captured_black: VecI16 = @bitCast(self.input_weights[captured.index_black][i..][0..SIMD_LANES].*);
+                const captured_white: VecI16 = @bitCast(self.ft_weights[captured.index_white][i..][0..SIMD_LANES].*);
+                const captured_black: VecI16 = @bitCast(self.ft_weights[captured.index_black][i..][0..SIMD_LANES].*);
                 child_white -%= captured_white;
                 child_black -%= captured_black;
             }

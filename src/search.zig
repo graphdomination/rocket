@@ -21,27 +21,23 @@ pub const INFINITY: i32 = 32000;
 const ASPIRATION_WINDOW: i32 = 50;
 const MAX_THREADS: usize = 256;
 
+const NULL_MOVE_REDUCTION: i32 = 3;
 const NULL_MOVE_MIN_DEPTH: i32 = 3;
 
 const LMR_MIN_DEPTH: i32 = 2;
 const LMR_MIN_MOVES: usize = 2;
 const LMR_REDUCTIONS = makeLMRTable();
 
-const SNMP_BASE: i32 = -20;
-const SNMP_FACTOR: i32 = 90;
-const SNMP_IMPROVING_DELTA: i32 = 30;
-const SNMP_MAX_DEPTH: i32 = 8;
+const FUTILITY_MARGINS = [_]i32{ 0, 250, 400, 600, 850, 1100, 1400, 1700, 2000 };
+const FUTILITY_DEPTH: i32 = 2;
 
-const FUTILITY_MARGINS = [_]i32{ 0, 200, 300, 440, 600, 780, 980, 1200, 1450 };
-const FUTILITY_IMPROVING_BONUS: i32 = 80;
-const FUTILITY_MAX_DEPTH: i32 = 7;
-
-const RAZOR_MARGINS = [_]i32{ 0, 380, 520, 680 };
+const RAZOR_MARGINS = [_]i32{ 0, 500, 700, 900 };
 const RAZOR_DEPTH: i32 = 3;
 
-const SINGULAR_EXTENSION_DEPTH: i32 = 8;
+const RFP_MARGIN: i32 = 110;
+const RFP_MAX_DEPTH: i32 = 6;
 
-const LATE_MOVE_PRUNING = [_]usize{ 0, 4, 7, 12, 18, 26 };
+const LATE_MOVE_PRUNING = [_]usize{ 0, 4, 8, 14, 24 };
 
 const KillerMoves = struct {
     moves: [MAX_PLY][2]Move,
@@ -65,8 +61,6 @@ const KillerMoves = struct {
         return move.equals(self.moves[ply][0]) or move.equals(self.moves[ply][1]);
     }
 };
-
-const PieceKind = @import("piece.zig").PieceKind;
 
 const History = struct {
     scores: [2][64][64]i32,
@@ -113,75 +107,53 @@ const History = struct {
     }
 };
 
-const ContinuationHistory = struct {
-    scores: [6][64][6][64]i32,
-    const MAX_SCORE: i32 = 16_384;
+const CountermoveHistory = struct {
+    table: [2][64][64]Move,
 
-    pub fn init() ContinuationHistory {
-        return ContinuationHistory{
-            .scores = [_][64][6][64]i32{[_][6][64]i32{[_][64]i32{[_]i32{0} ** 64} ** 6} ** 64} ** 6,
+    pub fn init() CountermoveHistory {
+        return CountermoveHistory{
+            .table = [_][64][64]Move{[_][64]Move{[_]Move{Move{ .from = 0, .to = 0 }} ** 64} ** 64} ** 2,
         };
     }
 
-    pub fn update(self: *ContinuationHistory, prev_piece: PieceKind, prev_to: u8, curr_piece: PieceKind, curr_to: u8, depth: i32) void {
-        self.applyBonus(prev_piece, prev_to, curr_piece, curr_to, @min(depth * depth, 512));
+    pub fn store(self: *CountermoveHistory, side: i8, prev_move: Move, counter_move: Move) void {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        self.table[color_idx][prev_move.from][prev_move.to] = counter_move;
     }
 
-    pub fn penalize(self: *ContinuationHistory, prev_piece: PieceKind, prev_to: u8, curr_piece: PieceKind, curr_to: u8, depth: i32) void {
-        self.applyBonus(prev_piece, prev_to, curr_piece, curr_to, -@min(depth * depth, 512));
-    }
-
-    fn applyBonus(self: *ContinuationHistory, prev_piece: PieceKind, prev_to: u8, curr_piece: PieceKind, curr_to: u8, bonus: i32) void {
-        const score = &self.scores[@intFromEnum(prev_piece)][prev_to][@intFromEnum(curr_piece)][curr_to];
-        const abs_bonus: i32 = @intCast(@abs(bonus));
-        score.* += bonus - @divTrunc(score.* * abs_bonus, MAX_SCORE);
-    }
-
-    pub fn getScore(self: *const ContinuationHistory, prev_piece: PieceKind, prev_to: u8, curr_piece: PieceKind, curr_to: u8) i32 {
-        return self.scores[@intFromEnum(prev_piece)][prev_to][@intFromEnum(curr_piece)][curr_to];
-    }
-
-    pub fn clear(self: *ContinuationHistory) void {
-        self.* = ContinuationHistory.init();
-    }
-};
-
-const CounterMoves = struct {
-    moves: [2][6][64]Move,
-
-    pub fn init() CounterMoves {
-        return CounterMoves{
-            .moves = [_][6][64]Move{[_][64]Move{[_]Move{Move{ .from = 0, .to = 0 }} ** 64} ** 6} ** 2,
-        };
-    }
-
-    pub fn store(self: *CounterMoves, last_move_piece: PieceKind, last_move_to: u8, color: i8, counter: Move) void {
-        const color_idx: usize = if (color == 1) 0 else 1;
-        self.moves[color_idx][@intFromEnum(last_move_piece)][last_move_to] = counter;
-    }
-
-    pub fn get(self: *const CounterMoves, last_move_piece: PieceKind, last_move_to: u8, color: i8) ?Move {
-        const color_idx: usize = if (color == 1) 0 else 1;
-        const move = self.moves[color_idx][@intFromEnum(last_move_piece)][last_move_to];
+    pub fn get(self: *const CountermoveHistory, side: i8, prev_move: Move) ?Move {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        const move = self.table[color_idx][prev_move.from][prev_move.to];
         if (move.from == 0 and move.to == 0) return null;
         return move;
     }
 
-    pub fn clear(self: *CounterMoves) void {
-        self.* = CounterMoves.init();
+    pub fn clear(self: *CountermoveHistory) void {
+        self.* = CountermoveHistory.init();
     }
 };
 
-const MoveHistoryEntry = struct {
-    piece: PieceKind,
-    to: u8,
+const ContinuationHistory = struct {
+    table: [2][64][64]i32,
 
-    pub fn invalid() MoveHistoryEntry {
-        return MoveHistoryEntry{ .piece = .King, .to = 255 };
+    pub fn init() ContinuationHistory {
+        return ContinuationHistory{
+            .table = [_][64][64]i32{[_][64]i32{[_]i32{0} ** 64} ** 64} ** 2,
+        };
     }
 
-    pub fn isValid(self: MoveHistoryEntry) bool {
-        return self.to < 64;
+    pub fn update(self: *ContinuationHistory, side: i8, move: Move, bonus: i32) void {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        self.table[color_idx][move.from][move.to] += bonus;
+    }
+
+    pub fn get(self: *const ContinuationHistory, side: i8, move: Move) i32 {
+        const color_idx: usize = if (side == 1) 0 else 1;
+        return self.table[color_idx][move.from][move.to];
+    }
+
+    pub fn clear(self: *ContinuationHistory) void {
+        self.* = ContinuationHistory.init();
     }
 };
 
@@ -237,10 +209,8 @@ pub const SearchThread = struct {
     state: GameState,
     killers: KillerMoves,
     history: History,
-    continuation_history: [2]ContinuationHistory,
-    counter_moves: CounterMoves,
-    move_history_stack: [MAX_PLY]MoveHistoryEntry,
-    static_eval_stack: [MAX_PLY]i32,
+    counter_moves: CountermoveHistory,
+    prev_move: ?Move,
     pv: PrincipalVariation,
     stats: SearchStats,
     ply: usize,
@@ -261,10 +231,8 @@ pub const SearchThread = struct {
             .state = state,
             .killers = KillerMoves.init(),
             .history = History.init(),
-            .continuation_history = [_]ContinuationHistory{ContinuationHistory.init()} ** 2,
-            .counter_moves = CounterMoves.init(),
-            .move_history_stack = [_]MoveHistoryEntry{MoveHistoryEntry.invalid()} ** MAX_PLY,
-            .static_eval_stack = [_]i32{-INFINITY} ** MAX_PLY,
+            .counter_moves = CountermoveHistory.init(),
+            .prev_move = null,
             .pv = PrincipalVariation.init(),
             .stats = SearchStats{},
             .ply = 0,
@@ -400,34 +368,17 @@ fn scoreMoveOrdering(thread: *SearchThread, move: Move, tt_move: ?Move, ply: usi
         return 100000 + victim_value - @divTrunc(attacker_value, 10);
     }
 
-    if (ply > 0 and thread.move_history_stack[ply - 1].isValid()) {
-        const prev = thread.move_history_stack[ply - 1];
-        if (thread.counter_moves.get(prev.piece, prev.to, thread.state.side_to_move)) |counter| {
-            if (move.equals(counter)) {
-                return 8500;
-            }
-        }
-    }
-
     if (thread.killers.isKiller(ply, move)) {
         return 9000;
     }
 
-    var score = thread.history.getScore(thread.state.side_to_move, move);
-
-    if (thread.state.board.squares[move.from].piece) |moving_piece| {
-        if (ply > 0 and thread.move_history_stack[ply - 1].isValid()) {
-            const prev = thread.move_history_stack[ply - 1];
-            score += thread.continuation_history[0].getScore(prev.piece, prev.to, moving_piece.kind, move.to);
-        }
-
-        if (ply >= 2 and thread.move_history_stack[ply - 2].isValid()) {
-            const prev2 = thread.move_history_stack[ply - 2];
-            score += thread.continuation_history[1].getScore(prev2.piece, prev2.to, moving_piece.kind, move.to);
+    if (thread.prev_move) |prev| {
+        if (thread.counter_moves.get(thread.state.side_to_move, prev)) |counter| {
+            if (move.equals(counter)) return 8000;
         }
     }
 
-    return score;
+    return thread.history.getScore(thread.state.side_to_move, move);
 }
 
 fn hasAnyLegalMove(state: *GameState) bool {
@@ -565,36 +516,26 @@ fn quiescence(thread: *SearchThread, alpha_init: i32, beta: i32, limits: *const 
     return alpha;
 }
 
-fn getLMRReduction(depth: i32, move_num: usize, is_pv: bool, is_capture: bool) i32 {
+fn getLMRReduction(depth: i32, move_num: usize, is_pv: bool) i32 {
     if (depth < LMR_MIN_DEPTH or move_num < LMR_MIN_MOVES) return 0;
 
-    const depth_idx: usize = @intCast(@min(depth - 1, MAX_DEPTH - 1));
-    const move_idx = @min(move_num - LMR_MIN_MOVES, 255);
-    const table_idx: usize = (if (is_pv) @as(usize, 2) else @as(usize, 0)) + (if (is_capture) @as(usize, 1) else @as(usize, 0));
-    const reduction: i32 = @intCast(LMR_REDUCTIONS[depth_idx][move_idx][table_idx]);
+    const depth_idx: usize = @intCast(@min(depth, MAX_DEPTH));
+    const move_idx = @min(move_num, 255);
+    var reduction: i32 = @intCast(LMR_REDUCTIONS[depth_idx][move_idx]);
+
+    if (is_pv) reduction = @max(0, reduction - 1);
 
     return @min(reduction, depth - 1);
 }
 
-fn makeLMRTable() [64][256][4]u8 {
-    @setEvalBranchQuota(100_000);
-    var table = [_][256][4]u8{[_][4]u8{[_]u8{0} ** 4} ** 256} ** 64;
-
-    for (0..64) |d| {
-        for (0..256) |m| {
-            const depth_f = @as(f32, @floatFromInt(d + 1));
-            const moves_f = @as(f32, @floatFromInt(m + LMR_MIN_MOVES));
-            const log_d = @log(depth_f);
-            const log_m = @log(moves_f);
-
-            const base = 0.75 + log_d * log_m / 2.0;
-            table[d][m][0] = @intFromFloat(@max(0.0, @min(@floor(base), 63.0)));
-
-            table[d][m][1] = @intFromFloat(@max(0.0, @min(@floor(base * 0.6), 63.0)));
-
-            table[d][m][2] = @intFromFloat(@max(0.0, @min(@floor(base * 0.7), 63.0)));
-
-            table[d][m][3] = @intFromFloat(@max(0.0, @min(@floor(base * 0.4), 63.0)));
+fn makeLMRTable() [@as(usize, @intCast(MAX_DEPTH)) + 1][256]u8 {
+    @setEvalBranchQuota(50_000);
+    var table = [_][256]u8{[_]u8{0} ** 256} ** (@as(usize, @intCast(MAX_DEPTH)) + 1);
+    for (LMR_MIN_DEPTH..MAX_DEPTH + 1) |depth| {
+        for (LMR_MIN_MOVES..256) |move_num| {
+            const log_depth = @log(@as(f32, @floatFromInt(depth)));
+            const log_moves = @log(@as(f32, @floatFromInt(move_num)));
+            table[@intCast(depth)][move_num] = @intFromFloat(0.75 + log_depth * log_moves / 2.0);
         }
     }
     return table;
@@ -607,16 +548,14 @@ fn alphaBeta(
     beta_init: i32,
     limits: *const SearchLimits,
     do_null: bool,
-    exclude_move: ?Move,
 ) anyerror!i32 {
     var alpha = alpha_init;
     var beta = beta_init;
     const is_pv = (beta - alpha) > 1;
     const is_root = (thread.ply == 0);
-    const ply: i32 = @intCast(thread.ply);
 
-    if (ply > thread.stats.seldepth) {
-        thread.stats.seldepth = ply;
+    if (@as(i32, @intCast(thread.ply)) > thread.stats.seldepth) {
+        thread.stats.seldepth = @intCast(thread.ply);
     }
 
     if (shouldStop(thread, limits)) return alpha;
@@ -630,8 +569,8 @@ fn alphaBeta(
 
     thread.stats.nodes += 1;
 
-    const mate_alpha = -MATE_SCORE + ply;
-    const mate_beta = MATE_SCORE - ply - 1;
+    const mate_alpha = -MATE_SCORE + @as(i32, @intCast(thread.ply));
+    const mate_beta = MATE_SCORE - @as(i32, @intCast(thread.ply)) - 1;
     if (mate_alpha >= beta) return mate_alpha;
     if (mate_beta <= alpha) return mate_beta;
     alpha = @max(alpha, mate_alpha);
@@ -646,36 +585,25 @@ fn alphaBeta(
             if (thread.hash_stack[thread.ply - distance] == hash) return 0;
         }
     }
-
     var tt_move: ?Move = null;
-    var tt_score: i32 = -INFINITY;
-    var tt_depth: i32 = 0;
-    var tt_bound: EntryType = .Alpha;
 
-    if (exclude_move == null) {
-        if (thread.tt.probe(hash)) |entry| {
-            thread.stats.tt_hits += 1;
-            tt_move = entry.best_move;
-            tt_score = entry.score;
-            tt_depth = entry.depth;
-            tt_bound = entry.entry_type;
+    if (thread.tt.probe(hash)) |entry| {
+        thread.stats.tt_hits += 1;
+        tt_move = entry.best_move;
 
-            if (entry.depth >= depth) {
-                const adjusted_score = if (eval.isMateScore(entry.score))
-                    if (entry.score > 0)
-                        entry.score - ply
-                    else
-                        entry.score + ply
+        if (entry.depth >= depth) {
+            const adjusted_score = if (eval.isMateScore(entry.score))
+                if (entry.score > 0)
+                    entry.score - @as(i32, @intCast(thread.ply))
                 else
-                    entry.score;
+                    entry.score + @as(i32, @intCast(thread.ply))
+            else
+                entry.score;
 
-                if (!is_root) {
-                    switch (entry.entry_type) {
-                        .Exact => return adjusted_score,
-                        .Alpha => if (!is_pv and adjusted_score <= alpha) return adjusted_score,
-                        .Beta => if (!is_pv and adjusted_score >= beta) return adjusted_score,
-                    }
-                }
+            switch (entry.entry_type) {
+                .Exact => if (!is_root) return adjusted_score,
+                .Alpha => if (!is_pv and adjusted_score <= alpha) return adjusted_score,
+                .Beta => if (!is_pv and adjusted_score >= beta) return adjusted_score,
             }
         }
     }
@@ -689,14 +617,7 @@ fn alphaBeta(
         else
             eval.evaluate(&thread.state);
         eval_cached = true;
-
-        thread.static_eval_stack[thread.ply] = static_eval;
     }
-
-    const improving = if (in_check or thread.ply < 2)
-        true
-    else
-        static_eval >= thread.static_eval_stack[thread.ply - 2];
 
     if (do_null and !is_pv and depth >= NULL_MOVE_MIN_DEPTH and !in_check and eval_cached) {
         if (static_eval >= beta) {
@@ -715,9 +636,8 @@ fn alphaBeta(
                 thread.hash_stack[thread.ply + 1] = hashAfterNull(hash, saved_ep);
                 thread.ply += 1;
 
-                const eval_margin = @max(0, static_eval - beta);
-                const R: i32 = 3 + @divTrunc(depth, 4) + @divTrunc(eval_margin, 200);
-                const null_score = -try alphaBeta(thread, depth - 1 - R, -beta, -beta + 1, limits, false, null);
+                const R = NULL_MOVE_REDUCTION + @divTrunc(depth, 4) + @divTrunc(@max(0, static_eval - beta), 200) + @as(i32, if (is_pv) 0 else 1);
+                const null_score = -try alphaBeta(thread, depth - 1 - R, -beta, -beta + 1, limits, false);
 
                 thread.ply -= 1;
                 thread.state.side_to_move = saved_side;
@@ -734,29 +654,23 @@ fn alphaBeta(
     }
 
     if (!is_pv and !in_check and eval_cached) {
-        if (depth <= RAZOR_DEPTH and static_eval + RAZOR_MARGINS[@intCast(@min(depth, 3))] < alpha) {
+        if (depth <= RAZOR_DEPTH and static_eval + RAZOR_MARGINS[@intCast(depth)] < alpha) {
             const razor_score = quiescence(thread, alpha, beta, limits);
             if (razor_score < alpha) return razor_score;
         }
 
-        if (depth <= SNMP_MAX_DEPTH) {
-            const snmp_margin = (SNMP_BASE + SNMP_FACTOR * depth - if (improving) SNMP_IMPROVING_DELTA * depth else 0);
-            if (static_eval - snmp_margin >= beta and @abs(beta) < MATE_SCORE - 1000) {
-                return static_eval - snmp_margin;
-            }
+        if (depth <= RFP_MAX_DEPTH and static_eval - RFP_MARGIN * depth >= beta and @abs(beta) < MATE_SCORE - 1000) {
+            return static_eval - RFP_MARGIN * depth;
         }
     }
 
     var futility_pruning = false;
-    if (!is_pv and depth <= FUTILITY_MAX_DEPTH and !in_check and eval_cached) {
+    if (!is_pv and depth <= FUTILITY_DEPTH and !in_check and eval_cached) {
         const margin_idx: usize = @intCast(@min(depth, 8));
-        const futility_margin = FUTILITY_MARGINS[margin_idx] + if (improving) FUTILITY_IMPROVING_BONUS * depth else 0;
-        if (static_eval + futility_margin < alpha) {
+        if (static_eval + FUTILITY_MARGINS[margin_idx] < alpha) {
             futility_pruning = true;
         }
     }
-
-    const iir: i32 = if (depth >= 4 and tt_move == null and (is_pv or depth >= 6)) 1 else 0;
 
     var moves = MoveList.init();
     movegen.generatePseudoLegalMoves(&thread.state, &moves);
@@ -774,26 +688,7 @@ fn alphaBeta(
 
     orderMoves(thread, moves.moves[0..moves.count], tt_move, thread.ply);
 
-    var singular_ext: i32 = 0;
-    if (depth >= SINGULAR_EXTENSION_DEPTH and exclude_move == null and tt_move != null and
-        tt_depth >= depth - 3 and tt_bound != .Alpha)
-    {
-        const rBeta = @max(tt_score - 2 * depth, -MATE_SCORE);
-        const rAlpha = rBeta - 1;
-        const rDepth = @divTrunc(depth - 3, 2);
-        const tt = tt_move.?;
-
-        const se_score = try alphaBeta(thread, rDepth, rAlpha, rBeta, limits, false, tt);
-        if (se_score <= rAlpha) {
-            singular_ext = 1;
-        } else if (se_score >= beta) {
-            return se_score;
-        }
-    }
-
-    const child_depth_init = depth - 1 - iir + singular_ext;
-
-    const child_depth = if (is_pv and moves.count == 1) child_depth_init + 1 else child_depth_init;
+    const iir: i32 = if (!is_pv and depth >= 4 and tt_move == null) 1 else 0;
 
     var best_move = Move{ .from = 0, .to = 0 };
     var best_score = -INFINITY;
@@ -805,12 +700,6 @@ fn alphaBeta(
     var quiet_count: usize = 0;
 
     for (moves.moves[0..moves.count]) |move| {
-        if (exclude_move) |excluded| {
-            if (move.from == excluded.from and move.to == excluded.to and move.promotion == excluded.promotion) {
-                continue;
-            }
-        }
-
         var undo = UndoInfo{
             .captured_piece = null,
             .castling_rights = thread.state.castling_rights,
@@ -827,15 +716,13 @@ fn alphaBeta(
         thread.ply += 1;
         thread.hash_stack[thread.ply] = hashAfterMove(hash, &thread.state, move, &undo, moving_piece);
 
-        thread.move_history_stack[thread.ply - 1] = MoveHistoryEntry{
-            .piece = moving_piece.kind,
-            .to = move.to,
-        };
-
         var score: i32 = undefined;
 
         const is_quiet = !move.is_capture and move.promotion == null;
         const gives_check = movegen.isInCheckState(&thread.state, thread.state.side_to_move);
+
+        const extension: i32 = if (gives_check and depth < 8) 1 else 0;
+        const child_depth = depth - 1 - iir + extension;
 
         if (futility_pruning and is_quiet and !gives_check and legal_moves > 0) {
             thread.ply -= 1;
@@ -843,10 +730,8 @@ fn alphaBeta(
             continue;
         }
 
-        if (!is_pv and !in_check and is_quiet and !gives_check and depth <= 5 and legal_moves > 0) {
-            const lmp_idx = @min(@as(usize, @intCast(depth)), LATE_MOVE_PRUNING.len - 1);
-            const lmp_limit = LATE_MOVE_PRUNING[lmp_idx] + @as(usize, @intCast(if (improving) @as(i32, 2) else 0));
-            if (legal_moves >= lmp_limit) {
+        if (!is_pv and !in_check and is_quiet and !gives_check and depth <= 4 and legal_moves > 0) {
+            if (legal_moves >= LATE_MOVE_PRUNING[@intCast(depth)]) {
                 thread.ply -= 1;
                 movegen.unmakeMove(&thread.state, move, &undo);
                 continue;
@@ -864,36 +749,42 @@ fn alphaBeta(
             net.pushAndUpdateForMove(&thread.state, move, captured_kind);
         }
 
+        const saved_prev_move = thread.prev_move;
+        thread.prev_move = move;
+
         if (legal_moves == 1) {
-            score = -try alphaBeta(thread, child_depth, -beta, -alpha, limits, true, null);
+            score = -try alphaBeta(thread, child_depth, -beta, -alpha, limits, true);
         } else {
             var reduction: i32 = 0;
             if (!move.is_capture and move.promotion == null and !gives_check) {
-                reduction = getLMRReduction(depth, legal_moves, is_pv, false);
+                reduction = getLMRReduction(depth, legal_moves, is_pv);
                 if (thread.killers.isKiller(thread.ply - 1, move)) {
                     reduction = @max(0, reduction - 1);
                 }
-            } else if (move.is_capture and !gives_check) {
-                reduction = getLMRReduction(depth, legal_moves, is_pv, true);
+
+                const hist = thread.history.getScore(thread.state.side_to_move, move);
+                reduction -= @divTrunc(hist, 8000);
+                reduction = @max(0, @min(depth - 1, reduction));
             }
 
             const reduced_depth = if (child_depth > 0)
                 @max(@as(i32, 1), child_depth - reduction)
             else
                 child_depth;
-            score = -try alphaBeta(thread, reduced_depth, -alpha - 1, -alpha, limits, true, null);
+            score = -try alphaBeta(thread, reduced_depth, -alpha - 1, -alpha, limits, true);
 
             if (score > alpha and reduction > 0) {
-                score = -try alphaBeta(thread, child_depth, -alpha - 1, -alpha, limits, true, null);
+                score = -try alphaBeta(thread, child_depth, -alpha - 1, -alpha, limits, true);
             }
 
             if (score > alpha and score < beta) {
-                score = -try alphaBeta(thread, child_depth, -beta, -alpha, limits, true, null);
+                score = -try alphaBeta(thread, child_depth, -beta, -alpha, limits, true);
             }
         }
 
+        thread.prev_move = saved_prev_move;
+
         thread.ply -= 1;
-        thread.move_history_stack[thread.ply] = MoveHistoryEntry.invalid();
         movegen.unmakeMove(&thread.state, move, &undo);
         if (thread.nnue) |net| net.popAccumulator();
 
@@ -918,35 +809,12 @@ fn alphaBeta(
                         thread.killers.store(thread.ply, move);
                         thread.history.update(thread.state.side_to_move, move, depth);
 
-                        if (thread.ply > 0 and thread.move_history_stack[thread.ply - 1].isValid()) {
-                            const prev = thread.move_history_stack[thread.ply - 1];
-                            thread.continuation_history[0].update(prev.piece, prev.to, moving_piece.kind, move.to, depth);
-                        }
-
-                        if (thread.ply >= 2 and thread.move_history_stack[thread.ply - 2].isValid()) {
-                            const prev2 = thread.move_history_stack[thread.ply - 2];
-                            thread.continuation_history[1].update(prev2.piece, prev2.to, moving_piece.kind, move.to, depth);
-                        }
-
-                        if (thread.ply > 0 and thread.move_history_stack[thread.ply - 1].isValid()) {
-                            const prev = thread.move_history_stack[thread.ply - 1];
-                            thread.counter_moves.store(prev.piece, prev.to, thread.state.side_to_move, move);
+                        if (thread.prev_move) |prev| {
+                            thread.counter_moves.store(thread.state.side_to_move, prev, move);
                         }
 
                         for (searched_quiets[0 .. quiet_count - 1]) |failed_quiet| {
                             thread.history.penalize(thread.state.side_to_move, failed_quiet, depth);
-
-                            if (thread.state.board.squares[failed_quiet.from].piece) |failed_piece| {
-                                if (thread.ply > 0 and thread.move_history_stack[thread.ply - 1].isValid()) {
-                                    const prev = thread.move_history_stack[thread.ply - 1];
-                                    thread.continuation_history[0].penalize(prev.piece, prev.to, failed_piece.kind, failed_quiet.to, depth);
-                                }
-
-                                if (thread.ply >= 2 and thread.move_history_stack[thread.ply - 2].isValid()) {
-                                    const prev2 = thread.move_history_stack[thread.ply - 2];
-                                    thread.continuation_history[1].penalize(prev2.piece, prev2.to, failed_piece.kind, failed_quiet.to, depth);
-                                }
-                            }
                         }
                     }
 
@@ -981,7 +849,7 @@ fn aspirationSearch(
     limits: *const SearchLimits,
 ) anyerror!i32 {
     if (depth <= 4) {
-        return try alphaBeta(thread, depth, -INFINITY, INFINITY, limits, true, null);
+        return try alphaBeta(thread, depth, -INFINITY, INFINITY, limits, true);
     }
 
     var alpha = prev_score - ASPIRATION_WINDOW;
@@ -989,23 +857,22 @@ fn aspirationSearch(
     var delta = ASPIRATION_WINDOW;
 
     while (true) {
-        const score = try alphaBeta(thread, depth, alpha, beta, limits, true, null);
+        const score = try alphaBeta(thread, depth, alpha, beta, limits, true);
 
         if (shouldStop(thread, limits)) return score;
 
         if (score <= alpha) {
-            beta = @divTrunc(alpha + beta * 3, 4);
             alpha = @max(alpha - delta, -INFINITY);
+            delta *= 2;
         } else if (score >= beta) {
-            alpha = @divTrunc(alpha * 3 + beta, 4);
             beta = @min(beta + delta, INFINITY);
+            delta *= 2;
         } else {
             return score;
         }
-        delta *= 2;
 
         if (alpha <= -INFINITY and beta >= INFINITY) {
-            return try alphaBeta(thread, depth, -INFINITY, INFINITY, limits, true, null);
+            return try alphaBeta(thread, depth, -INFINITY, INFINITY, limits, true);
         }
     }
 }
@@ -1055,6 +922,8 @@ fn iterativeDeepening(
     while (depth <= limits.max_depth) : (depth += 1) {
         thread.root_depth = depth;
         thread.ply = 0;
+
+        thread.history.age();
 
         score = try aspirationSearch(thread, depth, score, limits);
 
