@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build:
@@ -79,7 +80,7 @@ jobs:
             chmod +x "release_files/${{ matrix.output_binary }}"
           fi
 
-      - name: upload_build
+      - name: upload_temporary_build
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
@@ -89,7 +90,8 @@ jobs:
 
   create_release:
     name: create_release
-    needs: build
+    needs:
+      - build
     runs-on: ubuntu-latest
 
     steps:
@@ -108,6 +110,8 @@ jobs:
 
           echo "unix_time=${unix_time}" >> "$GITHUB_OUTPUT"
           echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
+
+          echo "[+] release name: ${release_name}"
 
       - name: generate_checksums
         shell: bash
@@ -133,7 +137,7 @@ jobs:
             commit: `${{ github.sha }}`
             unix time: `${{ steps.release_metadata.outputs.unix_time }}`
 
-            Included builds:
+            included builds:
             - `rocket_6th_gen_windows.exe`
             - `rocket_10th_gen_windows.exe`
             - `rocket_general_windows.exe`
@@ -146,3 +150,34 @@ jobs:
             release_files/checksums_sha256.txt
           fail_on_unmatched_files: true
           make_latest: true
+
+      - name: delete_temporary_artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          artifact_ids="$(
+            gh api \
+              --paginate \
+              "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+              --jq '.artifacts[].id'
+          )"
+
+          if [[ -z "${artifact_ids}" ]]; then
+            echo "[-] no temporary artifacts found"
+            exit 0
+          fi
+
+          while IFS= read -r artifact_id; do
+            if [[ -z "${artifact_id}" ]]; then
+              continue
+            fi
+
+            echo "[-] deleting artifact ${artifact_id}"
+
+            gh api \
+              --method DELETE \
+              "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+
+            echo "[+] deleted artifact ${artifact_id}"
+          done <<< "${artifact_ids}"
