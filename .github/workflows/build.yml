@@ -45,18 +45,49 @@ jobs:
 
     steps:
       - name: checkout_repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: install_zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.1
+        shell: bash
+        run: |
+          zig_version="0.14.1"
+          zig_archive="zig-x86_64-linux-${zig_version}.tar.xz"
+          zig_url="https://ziglang.org/download/${zig_version}/${zig_archive}"
+          zig_directory="${RUNNER_TEMP}/zig-${zig_version}"
+
+          echo "[-] downloading Zig ${zig_version}"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output "${RUNNER_TEMP}/${zig_archive}" \
+            "${zig_url}"
+
+          mkdir -p "${zig_directory}"
+
+          tar \
+            --extract \
+            --file="${RUNNER_TEMP}/${zig_archive}" \
+            --xz \
+            --strip-components=1 \
+            --directory="${zig_directory}"
+
+          echo "${zig_directory}" >> "$GITHUB_PATH"
+
+          echo "[+] installed Zig ${zig_version}"
 
       - name: verify_zig_version
         shell: bash
         run: |
-          zig version
-          test "$(zig version)" = "0.14.1"
+          installed_version="$(zig version)"
+
+          if [[ "${installed_version}" != "0.14.1" ]]; then
+            echo "[!] expected Zig 0.14.1, got ${installed_version}"
+            exit 1
+          fi
+
+          echo "[+] Zig ${installed_version}"
 
       - name: build_engine
         shell: bash
@@ -81,7 +112,7 @@ jobs:
           fi
 
       - name: upload_temporary_build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.name }}
           path: release_files/${{ matrix.output_binary }}
@@ -96,7 +127,7 @@ jobs:
 
     steps:
       - name: download_builds
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release_files
           merge-multiple: true
@@ -120,13 +151,8 @@ jobs:
           sha256sum * > checksums_sha256.txt
           cat checksums_sha256.txt
 
-      - name: list_release_files
-        shell: bash
-        run: |
-          ls -lah release_files
-
       - name: create_github_release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release_metadata.outputs.release_name }}
           name: ${{ steps.release_metadata.outputs.release_name }}
