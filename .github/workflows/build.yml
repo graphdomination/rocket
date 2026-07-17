@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - "v*"
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -90,12 +87,10 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  release:
+  create_release:
     name: create_release
     needs: build
     runs-on: ubuntu-latest
-
-    if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - name: download_builds
@@ -103,6 +98,23 @@ jobs:
         with:
           path: release_files
           merge-multiple: true
+
+      - name: generate_release_metadata
+        id: release_metadata
+        shell: bash
+        run: |
+          unix_time="$(date +%s)"
+          release_name="build-${GITHUB_SHA}-${unix_time}"
+
+          echo "unix_time=${unix_time}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
+
+      - name: generate_checksums
+        shell: bash
+        run: |
+          cd release_files
+          sha256sum * > checksums_sha256.txt
+          cat checksums_sha256.txt
 
       - name: list_release_files
         shell: bash
@@ -112,6 +124,25 @@ jobs:
       - name: create_github_release
         uses: softprops/action-gh-release@v2
         with:
-          files: release_files/*
-          generate_release_notes: true
+          tag_name: ${{ steps.release_metadata.outputs.release_name }}
+          name: ${{ steps.release_metadata.outputs.release_name }}
+          target_commitish: ${{ github.sha }}
+          body: |
+            automated ReleaseFast build
+
+            commit: `${{ github.sha }}`
+            unix time: `${{ steps.release_metadata.outputs.unix_time }}`
+
+            Included builds:
+            - `rocket_6th_gen_windows.exe`
+            - `rocket_10th_gen_windows.exe`
+            - `rocket_general_windows.exe`
+            - `rocket_general_linux`
+          files: |
+            release_files/rocket_6th_gen_windows.exe
+            release_files/rocket_10th_gen_windows.exe
+            release_files/rocket_general_windows.exe
+            release_files/rocket_general_linux
+            release_files/checksums_sha256.txt
           fail_on_unmatched_files: true
+          make_latest: true
