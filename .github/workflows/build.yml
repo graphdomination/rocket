@@ -1,4 +1,4 @@
-name: Build Rocket
+name: build_rocket
 
 on:
   push:
@@ -13,51 +13,75 @@ permissions:
   contents: read
 
 jobs:
-  build-windows:
-    name: Windows - ${{ matrix.name }}
+  build:
+    name: build_${{ matrix.name }}
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: i7-10700F
-            cpu: cometlake
-            output: rocket-i7-10700F.exe
-
-          - name: Intel-6th-Gen
+          - name: intel_6th_gen_windows
+            target: x86_64-windows-gnu
             cpu: skylake
-            output: rocket-intel-6th-gen.exe
+            source_binary: rocket.exe
+            output_binary: rocket_6th_gen_windows.exe
+
+          - name: intel_10th_gen_windows
+            target: x86_64-windows-gnu
+            cpu: skylake+avx+crc32+cx8+sse+sse2+sse3+sse4_1+sse4_2+ssse3+xsave
+            source_binary: rocket.exe
+            output_binary: rocket_10th_gen_windows.exe
+
+          - name: general_windows
+            target: x86_64-windows-gnu
+            cpu: x86_64
+            source_binary: rocket.exe
+            output_binary: rocket_general_windows.exe
+
+          - name: general_linux
+            target: x86_64-linux-musl
+            cpu: x86_64
+            source_binary: rocket
+            output_binary: rocket_general_linux
 
     steps:
-      - name: Checkout repository
+      - name: checkout_repository
         uses: actions/checkout@v4
 
-      - name: Install Zig
+      - name: install_zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.1
+          version: 0.14.1
 
-      - name: Show Zig version
-        run: zig version
+      - name: verify_zig_version
+        shell: bash
+        run: |
+          zig version
+          test "$(zig version)" = "0.14.1"
 
-      - name: Build
-        run: >
-          zig build
-          -Dtarget=x86_64-windows-gnu
-          -Dcpu=${{ matrix.cpu }}
-          -Doptimize=ReleaseFast
-          -Dstrip=true
+      - name: build_engine
+        shell: bash
+        run: |
+          zig build \
+            -Dtarget="${{ matrix.target }}" \
+            -Dcpu="${{ matrix.cpu }}" \
+            -Doptimize=ReleaseFast \
+            -Dstrip=true
 
-      - name: Prepare artifact
+      - name: prepare_artifact
+        shell: bash
         run: |
           mkdir -p artifacts
-          cp zig-out/bin/rocket.exe "artifacts/${{ matrix.output }}"
 
-      - name: Upload binary
+          cp \
+            "zig-out/bin/${{ matrix.source_binary }}" \
+            "artifacts/${{ matrix.output_binary }}"
+
+      - name: upload_artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.output }}
-          path: artifacts/${{ matrix.output }}
+          name: ${{ matrix.name }}
+          path: artifacts/${{ matrix.output_binary }}
           if-no-files-found: error
           compression-level: 9
