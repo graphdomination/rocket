@@ -48,9 +48,33 @@ jobs:
         uses: actions/checkout@v6
 
       - name: install_zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.1
+        shell: bash
+        run: |
+          zig_version="0.14.1"
+          zig_archive="zig-x86_64-linux-${zig_version}.tar.xz"
+          zig_directory="${RUNNER_TEMP}/zig-${zig_version}"
+
+          echo "[-] downloading Zig ${zig_version}"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output "${RUNNER_TEMP}/${zig_archive}" \
+            "https://ziglang.org/download/${zig_version}/${zig_archive}"
+
+          mkdir -p "${zig_directory}"
+
+          tar \
+            --extract \
+            --xz \
+            --file="${RUNNER_TEMP}/${zig_archive}" \
+            --directory="${zig_directory}" \
+            --strip-components=1
+
+          echo "${zig_directory}" >> "$GITHUB_PATH"
+
+          echo "[+] installed Zig ${zig_version}"
 
       - name: verify_zig_version
         shell: bash
