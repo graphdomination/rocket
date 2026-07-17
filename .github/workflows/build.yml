@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -69,19 +69,49 @@ jobs:
             -Doptimize=ReleaseFast \
             -Dstrip=true
 
-      - name: prepare_artifact
+      - name: prepare_release_file
         shell: bash
         run: |
-          mkdir -p artifacts
+          mkdir -p release_files
 
           cp \
             "zig-out/bin/${{ matrix.source_binary }}" \
-            "artifacts/${{ matrix.output_binary }}"
+            "release_files/${{ matrix.output_binary }}"
 
-      - name: upload_artifact
+          if [[ "${{ matrix.target }}" == *linux* ]]; then
+            chmod +x "release_files/${{ matrix.output_binary }}"
+          fi
+
+      - name: upload_build
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: artifacts/${{ matrix.output_binary }}
+          path: release_files/${{ matrix.output_binary }}
           if-no-files-found: error
-          compression-level: 9
+          compression-level: 0
+
+  release:
+    name: create_release
+    needs: build
+    runs-on: ubuntu-latest
+
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: download_builds
+        uses: actions/download-artifact@v4
+        with:
+          path: release_files
+          merge-multiple: true
+
+      - name: list_release_files
+        shell: bash
+        run: |
+          ls -lah release_files
+
+      - name: create_github_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_files/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
