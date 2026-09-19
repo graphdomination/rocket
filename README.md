@@ -8,5 +8,5 @@
 High performance competition chess engine written in Zig.
 
 ---
-
+P.S. Thank you GPT for writing tests 🥺
 TODO: add carbon code previews, architecture, tech etc etc
