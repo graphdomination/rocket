@@ -1,4 +1,4 @@
-# Rocket UCI chess engine
+# Rocket
 ![Zig](https://img.shields.io/badge/zig-0.14.1-F7A41D?style=flat&logo=zig&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-universal-0078D4?style=flat)
 ![Build](https://img.shields.io/badge/build-zig%20build-555555?style=flat&logo=zig&logoColor=white)
